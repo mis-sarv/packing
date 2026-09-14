@@ -1503,7 +1503,7 @@ async function dispatchPost(payload) {
 
                 var pdfBlob = await generatePackingSlipPdfClient(
                     slipRow.slip_no, header, items, dispatch,
-                    slipRow.total_qty, slipRow.total_weight, slipRow.packing_type,
+                    slipRow.total_pcs, slipRow.total_weight, slipRow.packing_type,
                     ['Original Copy'], slipRow.prepared_by_name || '', sigImg
                 );
                 var base64 = await blobToBase64(pdfBlob);
@@ -2046,8 +2046,15 @@ async function generatePackingSlipPdfClient(slipNo, header, items, dispatch, gra
         buildInfoGrid(header, dispatch, slipNo, header.thirdPartyName || '', items);
 
     // ── Grand total bar ──
-    var totalPacks = 0;
-    items.forEach(function(item) { totalPacks += (item.subRows||[]).length; });
+    var totalPacks = 0, grandQty = 0, grandWt = 0;
+    items.forEach(function(item) {
+        var subs = item.subRows || [];
+        totalPacks += subs.length;
+        subs.forEach(function(r) {
+            grandQty += Number(r.qty) || 0;
+            grandWt  += Number(r.weight) || 0;
+        });
+    });
     var grandBar = '<div class="grand-bar"><span>Total Packs: <strong>' + totalPacks + '</strong></span>' +
         '<span>Total Pcs: <strong>' + grandQty + '</strong></span>' +
         '<span>Total Weight: <strong>' + Number(grandWt).toFixed(2) + ' Kg</strong></span></div>';
@@ -4142,14 +4149,14 @@ async function handleFinish() {
 
         originalBlob = await generatePackingSlipPdfClient(
             result.slipNo, savedPayload.header, savedPayload.items, savedPayload.dispatch,
-            result.totalQty, result.totalWeight, savedPayload.packingType,
+            result.totalPcs, result.totalWeight, savedPayload.packingType,
             ['Original Copy'], preparedByName, sigImg
         );
         console.log('📄 [2/4] Original Copy PDF blob generated:', originalBlob.size, 'bytes');
 
         fullBlob = await generatePackingSlipPdfClient(
             result.slipNo, savedPayload.header, savedPayload.items, savedPayload.dispatch,
-            result.totalQty, result.totalWeight, savedPayload.packingType,
+            result.totalPcs, result.totalWeight, savedPayload.packingType,
             null, // all 3 copies
             preparedByName, sigImg
         );
@@ -5402,14 +5409,14 @@ async function regenerateSlipPdf(packingType, slipNo, btnEl) {
         // Generate full 3-copy PDF
         var fullBlob = await generatePackingSlipPdfClient(
             slipRow.slip_no, header, items, dispatch,
-            slipRow.total_qty, slipRow.total_weight, slipRow.packing_type,
+            slipRow.total_pcs, slipRow.total_weight, slipRow.packing_type,
             null, slipRow.prepared_by_name || '', null
         );
 
         // Generate original-only PDF
         var origBlob = await generatePackingSlipPdfClient(
             slipRow.slip_no, header, items, dispatch,
-            slipRow.total_qty, slipRow.total_weight, slipRow.packing_type,
+            slipRow.total_pcs, slipRow.total_weight, slipRow.packing_type,
             ['Original Copy'], slipRow.prepared_by_name || '', null
         );
 
@@ -5779,12 +5786,12 @@ async function fetchOrdersPage() {
                 html += '<tr data-order-no="' + escapeHtmlAttr(o.orderNo) + '" style="background:' + rowBg + ';">' +
                     '<td style="padding:4px;border:1px solid #e2e8f0;font-weight:700;text-align:center;">' + escapeHtmlJs(o.orderNo) + '</td>' +
                     '<td style="padding:2px;border:1px solid #e2e8f0;">' +
-                        (isLocked ? '<span style="font-weight:600;">' + escapeHtmlJs(o.quality) + ' 🔒</span>' :
+                        (isLocked ? '<span class="so-quality" data-locked-value="' + escapeHtmlAttr(o.quality) + '" style="font-weight:600;">' + escapeHtmlJs(o.quality) + ' 🔒</span>' :
                         '<select class="so-quality" style="width:100%;padding:3px;border:1px solid #cbd5e1;border-radius:3px;font-size:10px;"' +
                         (isCompleted ? ' disabled' : '') + '>' + qualOpts + '</select>') +
                     '</td>' +
                     '<td style="padding:2px;border:1px solid #e2e8f0;">' +
-                        (isLocked ? '<span style="font-size:10px;">' + escapeHtmlJs(o.item) + ' 🔒</span>' :
+                        (isLocked ? '<span class="so-item" data-locked-value="' + escapeHtmlAttr(o.item) + '" style="font-size:10px;">' + escapeHtmlJs(o.item) + ' 🔒</span>' :
                         '<select class="so-item" style="width:100%;padding:3px;border:1px solid #cbd5e1;border-radius:3px;font-size:10px;"' +
                         (isCompleted ? ' disabled' : '') + '>' + typeOpts + '</select>') +
                     '</td>' +
@@ -5881,9 +5888,9 @@ async function saveOrderGroup(baseNo) {
         var orderNo = tr.getAttribute('data-order-no');
         var isNew = tr.getAttribute('data-new') === 'true';
         var qualSel = tr.querySelector('.so-quality');
-        var quality = qualSel ? (qualSel.tagName === 'SELECT' ? qualSel.value : qualSel.textContent.replace('🔒','').trim()) : '';
+        var quality = qualSel ? (qualSel.tagName === 'SELECT' ? qualSel.value : (qualSel.getAttribute('data-locked-value') || qualSel.textContent.replace('🔒','').trim())) : '';
         var itemSel = tr.querySelector('.so-item');
-        var item = itemSel ? (itemSel.tagName === 'SELECT' ? itemSel.value : itemSel.textContent.replace('🔒','').trim()) : '';
+        var item = itemSel ? (itemSel.tagName === 'SELECT' ? itemSel.value : (itemSel.getAttribute('data-locked-value') || itemSel.textContent.replace('🔒','').trim())) : '';
         var qty = Number((tr.querySelector('.so-qty') || {}).value) || 0;
         var status = (tr.querySelector('.so-status') || {}).value || 'PENDING';
         var marka = (tr.querySelector('.so-marka') || {}).value || '';
@@ -5945,7 +5952,11 @@ async function saveOrderGroup(baseNo) {
             return;
         }
         showToast('✅ Order ' + baseNo + ' saved (' + updates.length + ' sub-orders)');
-        fetchOrdersPage();
+        // ⚡ Keep Orders panel + Quick Pack panel in sync — refresh both in parallel
+        Promise.all([
+            fetchOrdersPage(),
+            refreshQuickPackPanel()
+        ]);
     } catch(e) {
         alert('❌ Save failed: ' + e.message);
     }
